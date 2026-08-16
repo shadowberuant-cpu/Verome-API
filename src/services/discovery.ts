@@ -142,15 +142,124 @@ export async function getTopTracks(country?: string, limit = 20, ytmusic?: YTMus
   }
 }
 
-export async function getSimilarTracks(title: string, artist: string, limit: string, youtubeSearch: any) {
-  const similar = await LastFM.getSimilarTracks(title, artist, limit);
-  if ("error" in similar) return { error: (similar as any).error };
+export async function getSimilarTracks(
+  title: string,
+  artist: string,
+  limit: string,
+  youtubeSearch: any
+) {
+  try {
+    const requestedLimit = Math.min(Math.max(parseInt(limit) || 5, 1), 10);
 
-  const ytResults = await Promise.all(
-    (similar as any[]).map(async (t: any) => {
-      const r = await youtubeSearch.searchVideos(`${t.title} ${t.artist}`);
-      return r.results[0] || null;
-    })
-  );
-  return ytResults.filter(Boolean);
+    // 1. Last.fm se similar songs
+    const similar = await LastFM.getSimilarTracks(
+      title,
+      artist,
+      String(requestedLimit * 2)
+    );
+
+    if ("error" in similar) {
+      return { error: (similar as any).error };
+    }
+
+    if (!Array.isArray(similar) || similar.length === 0) {
+      return [];
+    }
+
+    // 2. Current song ko repeat hone se roko
+    const currentTitle = title.toLowerCase().trim();
+    const currentArtist = artist.toLowerCase().trim();
+
+    const candidates = (similar as any[]).filter((track: any) => {
+      if (!track?.title || !track?.artist) return false;
+
+      const t = track.title.toLowerCase().trim();
+      const a = track.artist.toLowerCase().trim();
+
+      return !(t === currentTitle && a === currentArtist);
+    });
+
+    // 3. YouTube search — har recommendation ko separately verify karo
+    const results = await Promise.all(
+      candidates.map(async (track: any) => {
+        try {
+          const query = `"${track.title}" "${track.artist}"`;
+
+          const r = await youtubeSearch.searchVideos(query);
+
+          if (!r?.results || !Array.isArray(r.results)) {
+            return null;
+          }
+
+          // Search results me music-looking result choose karo
+          const playable = r.results.find((item: any) => {
+            if (!item?.videoId || !item?.title) return false;
+
+            const text =
+              `${item.title} ${item.author || ""}`.toLowerCase();
+
+            // Non-music content ko reject karo
+            const blocked = [
+              "podcast",
+              "interview",
+              "reaction",
+              "reacts",
+              "news",
+              "live stream",
+              "livestream",
+              "gaming",
+              "gameplay",
+              "episode",
+              "got talent",
+              "shorts",
+              "compilation",
+              "jukebox",
+              "mix",
+              "playlist",
+            ];
+
+            if (blocked.some((word) => text.includes(word))) {
+              return false;
+            }
+
+            return true;
+          });
+
+          if (!playable) return null;
+
+          return {
+            videoId: playable.videoId,
+            title: playable.title,
+            artist:
+              playable.artists
+                ?.map((a: any) => a.name)
+                .join(", ") ||
+              playable.author ||
+              track.artist,
+          };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    // 4. Null results hatao
+    const validResults = results.filter(Boolean);
+
+    // 5. Duplicate video IDs hatao
+    const seen = new Set<string>();
+
+    const uniqueResults = validResults.filter((track: any) => {
+      if (seen.has(track.videoId)) return false;
+
+      seen.add(track.videoId);
+      return true;
+    });
+
+    return uniqueResults.slice(0, requestedLimit);
+  } catch (err) {
+    return {
+      error: String(err),
+    };
+  }
 }
