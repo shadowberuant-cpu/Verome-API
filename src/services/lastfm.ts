@@ -8,21 +8,51 @@ const API_KEY = Deno.env.get("LASTFM_API_KEY") || "";
 export const LastFM = {
   API_KEY,
 
-  async getSimilarTracks(title: string, artist: string, limit = "5") {
-    const url = `https://ws.audioscrobbler.com/2.0/?method=track.getsimilar&artist=${encodeURIComponent(artist)}&track=${encodeURIComponent(title)}&api_key=${API_KEY}&limit=${limit}&format=json`;
-    try {
-      const response = await fetch(url);
-      const data = await response.json();
-      if (data?.error) return { error: data.message || "Last.fm error" };
-      return (data?.similartracks?.track || [])
-        .map((t: any) => ({ title: t.name, artist: t?.artist?.name }))
-        .filter((t: any) => t.title && t.artist);
-    } catch {
-      return { error: "Failed to fetch similar tracks" };
-    }
-  },
-};
+async getSimilarTracks(title: string, artist: string, limit = "5") {
+  const url =
+    `https://ws.audioscrobbler.com/2.0/?method=track.getsimilar` +
+    `&artist=${encodeURIComponent(artist)}` +
+    `&track=${encodeURIComponent(title)}` +
+    `&api_key=${API_KEY}` +
+    `&limit=${limit}` +
+    `&autocorrect=1` +
+    `&format=json`;
 
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+
+    console.log("LASTFM URL:", url);
+    console.log("LASTFM RESPONSE:", JSON.stringify(data));
+
+    if (data?.error) {
+      return {
+        error: `${data.error}: ${data.message || "Last.fm error"}`
+      };
+    }
+
+    const tracks = data?.similartracks?.track;
+
+    if (!tracks) {
+      return [];
+    }
+
+    const list = Array.isArray(tracks) ? tracks : [tracks];
+
+    return list
+      .map((t: any) => ({
+        title: t?.name,
+        artist: t?.artist?.name
+      }))
+      .filter((t: any) => t.title && t.artist);
+
+  } catch (err) {
+    console.log("LASTFM FETCH ERROR:", err);
+    return {
+      error: "Failed to fetch similar tracks"
+    };
+  }
+}
 export async function getArtistInfo(artist: string) {
   try {
     const url = `https://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=${encodeURIComponent(artist)}&api_key=${API_KEY}&format=json`;
