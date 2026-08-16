@@ -3,7 +3,7 @@
  * Artist info, track info, and similar tracks
  */
 
-const API_KEY = "0867bcb6f36c879398969db682a7b69b";
+const API_KEY = Deno.env.get("LASTFM_API_KEY") || "";
 
 export const LastFM = {
   API_KEY,
