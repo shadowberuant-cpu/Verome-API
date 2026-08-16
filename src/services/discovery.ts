@@ -148,84 +148,13 @@ export async function getSimilarTracks(
   limit: string,
   youtubeSearch: any
 ) {
-  try {
-    const requestedLimit = Math.min(Math.max(parseInt(limit) || 5, 1), 10);
+  const similar = await LastFM.getSimilarTracks(title, artist, limit);
 
-    // Last.fm → similar tracks
-    const similar = await LastFM.getSimilarTracks(
-      title,
-      artist,
-      String(requestedLimit * 2)
-    );
+  console.log("LASTFM SIMILAR:", JSON.stringify(similar));
 
-    if ("error" in similar) {
-      return { error: (similar as any).error };
-    }
-
-    if (!Array.isArray(similar) || similar.length === 0) {
-      return [];
-    }
-
-    const results = await Promise.all(
-      similar.map(async (track: any) => {
-        try {
-          const search = await youtubeSearch.searchVideos(
-            `${track.title} ${track.artist}`
-          );
-
-          if (!search?.results?.length) return null;
-
-          // YouTubeSearch ka actual structure:
-          // id, title, channel.name
-          const video = search.results.find((v: any) => {
-            if (!v?.id || !v?.title) return false;
-
-            const text = v.title.toLowerCase();
-
-            // Obviously non-song results ko skip karo
-            const blocked = [
-              "podcast",
-              "interview",
-              "reaction",
-              "news",
-              "gaming",
-              "gameplay",
-              "episode",
-              "livestream",
-              "live stream",
-            ];
-
-            return !blocked.some(word => text.includes(word));
-          });
-
-          if (!video) return null;
-
-          return {
-            videoId: video.id,
-            title: video.title,
-            artist: video.channel?.name || track.artist,
-          };
-        } catch {
-          return null;
-        }
-      })
-    );
-
-    // Remove failed + duplicate results
-    const seen = new Set<string>();
-
-    return results
-      .filter(Boolean)
-      .filter((track: any) => {
-        if (seen.has(track.videoId)) return false;
-        seen.add(track.videoId);
-        return true;
-      })
-      .slice(0, requestedLimit);
-
-  } catch (err) {
-    return {
-      error: String(err),
-    };
+  if ("error" in similar) {
+    return { error: (similar as any).error };
   }
+
+  return similar;
 }
