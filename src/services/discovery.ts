@@ -151,7 +151,7 @@ export async function getSimilarTracks(
   try {
     const requestedLimit = Math.min(Math.max(parseInt(limit) || 5, 1), 10);
 
-    // 1. Last.fm se similar songs
+    // Last.fm → similar tracks
     const similar = await LastFM.getSimilarTracks(
       title,
       artist,
@@ -166,76 +166,44 @@ export async function getSimilarTracks(
       return [];
     }
 
-    // 2. Current song ko repeat hone se roko
-    const currentTitle = title.toLowerCase().trim();
-    const currentArtist = artist.toLowerCase().trim();
-
-    const candidates = (similar as any[]).filter((track: any) => {
-      if (!track?.title || !track?.artist) return false;
-
-      const t = track.title.toLowerCase().trim();
-      const a = track.artist.toLowerCase().trim();
-
-      return !(t === currentTitle && a === currentArtist);
-    });
-
-    // 3. YouTube search — har recommendation ko separately verify karo
     const results = await Promise.all(
-      candidates.map(async (track: any) => {
+      similar.map(async (track: any) => {
         try {
-          const query = `"${track.title}" "${track.artist}"`;
+          const search = await youtubeSearch.searchVideos(
+            `${track.title} ${track.artist}`
+          );
 
-          const r = await youtubeSearch.searchVideos(query);
+          if (!search?.results?.length) return null;
 
-          if (!r?.results || !Array.isArray(r.results)) {
-            return null;
-          }
+          // YouTubeSearch ka actual structure:
+          // id, title, channel.name
+          const video = search.results.find((v: any) => {
+            if (!v?.id || !v?.title) return false;
 
-          // Search results me music-looking result choose karo
-          const playable = r.results.find((item: any) => {
-            if (!item?.videoId || !item?.title) return false;
+            const text = v.title.toLowerCase();
 
-            const text =
-              `${item.title} ${item.author || ""}`.toLowerCase();
-
-            // Non-music content ko reject karo
+            // Obviously non-song results ko skip karo
             const blocked = [
               "podcast",
               "interview",
               "reaction",
-              "reacts",
               "news",
-              "live stream",
-              "livestream",
               "gaming",
               "gameplay",
               "episode",
-              "got talent",
-              "shorts",
-              "compilation",
-              "jukebox",
-              "mix",
-              "playlist",
+              "livestream",
+              "live stream",
             ];
 
-            if (blocked.some((word) => text.includes(word))) {
-              return false;
-            }
-
-            return true;
+            return !blocked.some(word => text.includes(word));
           });
 
-          if (!playable) return null;
+          if (!video) return null;
 
           return {
-            videoId: playable.videoId,
-            title: playable.title,
-            artist:
-              playable.artists
-                ?.map((a: any) => a.name)
-                .join(", ") ||
-              playable.author ||
-              track.artist,
+            videoId: video.id,
+            title: video.title,
+            artist: video.channel?.name || track.artist,
           };
         } catch {
           return null;
@@ -243,20 +211,18 @@ export async function getSimilarTracks(
       })
     );
 
-    // 4. Null results hatao
-    const validResults = results.filter(Boolean);
-
-    // 5. Duplicate video IDs hatao
+    // Remove failed + duplicate results
     const seen = new Set<string>();
 
-    const uniqueResults = validResults.filter((track: any) => {
-      if (seen.has(track.videoId)) return false;
+    return results
+      .filter(Boolean)
+      .filter((track: any) => {
+        if (seen.has(track.videoId)) return false;
+        seen.add(track.videoId);
+        return true;
+      })
+      .slice(0, requestedLimit);
 
-      seen.add(track.videoId);
-      return true;
-    });
-
-    return uniqueResults.slice(0, requestedLimit);
   } catch (err) {
     return {
       error: String(err),
