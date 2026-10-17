@@ -7,9 +7,93 @@ import { json, error, corsHeaders } from "../helpers/response.ts";
 import { fetchFromPiped, fetchFromInvidious } from "../services/streaming.ts";
 import type { YTMusic } from "../services/ytmusic.ts";
 
-export async function handleStream(searchParams: URLSearchParams): Promise<Response> {
+
+export async function handleStream(
+  searchParams: URLSearchParams,
+): Promise<Response> {
   const id = searchParams.get("id");
+
   if (!id) return error("Missing id");
+
+  // Prevent this endpoint from waiting indefinitely.
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutResponse = new Promise<Response>((resolve) => {
+    timeoutId = setTimeout(() => {
+      resolve(
+        json(
+          {
+            success: false,
+            error: "Stream request timed out",
+            message:
+              "Streaming providers did not respond in time. Please try again.",
+          },
+          504,
+        ),
+      );
+    }, 25000);
+  });
+
+  const streamRequest = async (): Promise<Response> => {
+    const piped = await fetchFromPiped(id);
+
+    if (piped.success && piped.streamingUrls?.length) {
+      return json({
+        success: true,
+        service: "piped",
+        instance: piped.instance,
+        streamingUrls: piped.streamingUrls,
+        metadata: piped.metadata,
+        requestedId: id,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const invidious = await fetchFromInvidious(id);
+
+    if (invidious.success && invidious.streamingUrls?.length) {
+      return json({
+        success: true,
+        service: "invidious",
+        instance: invidious.instance,
+        streamingUrls: invidious.streamingUrls,
+        metadata: invidious.metadata,
+        requestedId: id,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return json(
+      {
+        success: false,
+        error: "No streaming data found",
+        message: "All configured streaming providers failed.",
+      },
+      502,
+    );
+  };
+
+  try {
+    return await Promise.race([
+      streamRequest(),
+      timeoutResponse,
+    ]);
+  } catch (err) {
+    console.error("Stream request failed:", err);
+
+    return json(
+      {
+        success: false,
+        error: "Stream request failed",
+      },
+      502,
+    );
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
 
   const piped = await fetchFromPiped(id);
   if (piped.success) {
