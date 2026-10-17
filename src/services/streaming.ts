@@ -1,11 +1,19 @@
+
 /**
  * Streaming Service
- * Fetches audio stream URLs from Piped and Invidious instances
+ * Fetches audio stream URLs from Piped and Invidious instances.
  */
 
-let instancesCache: any = null;
+type StreamingInstanceList = {
+  piped: string[];
+  invidious: string[];
+};
+
+let instancesCache: StreamingInstanceList | null = null;
 let instancesCacheTime = 0;
+
 const CACHE_DURATION = 5 * 60 * 1000;
+const REQUEST_TIMEOUT = 8000;
 
 const PIPED_INSTANCES = [
   "https://api.piped.private.coffee",
@@ -19,112 +27,197 @@ const PIPED_INSTANCES = [
   "https://pipedapi.leptons.xyz",
 ];
 
-async function getDynamicInstances() {
+const FALLBACK_INVIDIOUS_INSTANCES = [
+  "https://y.com.sb",
+  "https://inv.nadeko.net",
+];
+
+async function getDynamicInstances(): Promise<StreamingInstanceList> {
   const now = Date.now();
-  if (instancesCache && (now - instancesCacheTime) < CACHE_DURATION) {
+
+  if (
+    instancesCache &&
+    now - instancesCacheTime < CACHE_DURATION
+  ) {
     return instancesCache;
   }
 
   try {
-    const response = await fetch("https://raw.githubusercontent.com/n-ce/Uma/main/dynamic_instances.json");
+    const response = await fetch(
+      "https://raw.githubusercontent.com/n-ce/Uma/main/dynamic_instances.json",
+      { signal: AbortSignal.timeout(REQUEST_TIMEOUT) },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Instance list HTTP ${response.status}`);
+    }
+
     const data = await response.json();
-    data.piped = PIPED_INSTANCES;
-    instancesCache = data;
+
+    instancesCache = {
+      // Keep the configured Piped list and use the fetched
+      // Invidious list when it is valid.
+      piped: PIPED_INSTANCES,
+      invidious:
+        Array.isArray(data?.invidious) && data.invidious.length > 0
+          ? data.invidious.filter(
+              (url: unknown): url is string =>
+                typeof url === "string" &&
+                url.startsWith("https://"),
+            )
+          : FALLBACK_INVIDIOUS_INSTANCES,
+    };
+
     instancesCacheTime = now;
     return instancesCache;
-  } catch {
+  } catch (err) {
+    console.warn("Could not load dynamic instances:", String(err));
+
     return {
       piped: PIPED_INSTANCES,
-      invidious: ["https://y.com.sb", "https://inv.nadeko.net"],
+      invidious: FALLBACK_INVIDIOUS_INSTANCES,
     };
   }
 }
 
 export async function fetchFromPiped(videoId: string) {
   const instances = await getDynamicInstances();
-  const pipedInstances = instances.piped || [];
 
-  for (const instance of pipedInstances) {
+  for (const instance of instances.piped) {
     try {
-      const response = await fetch(`${instance}/streams/${videoId}`, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-      });
+      const response = await fetch(
+        `${instance}/streams/${encodeURIComponent(videoId)}`,
+        {
+          headers: {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+          },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT),
+        },
+      );
+
+      if (!response.ok) {
+        console.warn(`Piped ${instance}: HTTP ${response.status}`);
+        continue;
+      }
+
       const data = await response.json();
 
-      if (data?.error) continue;
+      if (
+        !Array.isArray(data?.audioStreams) ||
+        data.audioStreams.length === 0
+      ) {
+        console.warn(`Piped ${instance}: no audio streams`);
+        continue;
+      }
 
-      if (data?.audioStreams?.length) {
-        const instanceUrl = new URL(instance);
-        const proxyHost = instanceUrl.host.replace("pipedapi", "pipedproxy").replace("api.", "proxy.");
+      const instanceUrl = new URL(instance);
+      const proxyHost = instanceUrl.host
+        .replace("pipedapi", "pipedproxy")
+        .replace("api.", "proxy.");
 
-        return {
-          success: true,
-          instance,
-          streamingUrls: data.audioStreams.map((s: any) => ({
+      return {
+        success: true,
+        service: "piped",
+        instance,
+        streamingUrls: data.audioStreams
+          .filter((s: any) => typeof s.url === "string" && s.url)
+          .map((s: any) => ({
             url: s.url,
             quality: s.quality,
             mimeType: s.mimeType,
             bitrate: s.bitrate,
             proxyHost,
           })),
-          metadata: {
-            id: videoId,
-            title: data.title,
-            uploader: data.uploader,
-            thumbnail: data.thumbnailUrl,
-            duration: data.duration,
-            views: data.views,
-          },
-          hlsUrl: data.hls,
-        };
-      }
-    } catch {
-      continue;
+        metadata: {
+          id: videoId,
+          title: data.title,
+          uploader: data.uploader,
+          thumbnail: data.thumbnailUrl,
+          duration: data.duration,
+          views: data.views,
+        },
+        hlsUrl: data.hls,
+      };
+    } catch (err) {
+      console.warn(`Piped ${instance} failed:`, String(err));
     }
   }
 
-  return { success: false, error: "No working Piped instances found" };
+  return {
+    success: false,
+    error: "No working Piped instances found",
+  };
 }
 
 export async function fetchFromInvidious(videoId: string) {
   const instances = await getDynamicInstances();
-  const invidiousInstances = instances.invidious || [];
 
-  for (const instance of invidiousInstances) {
+  for (const instance of instances.invidious) {
     try {
-      const response = await fetch(`${instance}/api/v1/videos/${videoId}`);
+      const response = await fetch(
+        `${instance}/api/v1/videos/${encodeURIComponent(videoId)}`,
+        {
+          headers: {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+          },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT),
+        },
+      );
+
+      if (!response.ok) {
+        console.warn(`Invidious ${instance}: HTTP ${response.status}`);
+        continue;
+      }
+
       const data = await response.json();
 
-      if (data) {
-        const audioFormats = (data.adaptiveFormats || []).filter((f: any) =>
-          f.type?.includes("audio") || f.mimeType?.includes("audio")
-        );
+      const audioFormats = (
+        Array.isArray(data?.adaptiveFormats) ? data.adaptiveFormats : []
+      ).filter(
+        (f: any) =>
+          typeof f.url === "string" &&
+          f.url &&
+          (
+            f.type?.includes("audio") ||
+            f.mimeType?.includes("audio")
+          ),
+      );
 
-        return {
-          success: true,
-          instance,
-          streamingUrls: audioFormats.map((f: any) => ({
-            url: `${instance}/latest_version?id=${videoId}&itag=${f.itag}`,
-            directUrl: f.url,
-            bitrate: f.bitrate,
-            type: f.type,
-            audioQuality: f.audioQuality,
-            itag: f.itag,
-          })),
-          metadata: {
-            id: videoId,
-            title: data.title,
-            author: data.author,
-            thumbnail: data.videoThumbnails?.[0]?.url,
-            lengthSeconds: data.lengthSeconds,
-            viewCount: data.viewCount,
-          },
-        };
+      if (audioFormats.length === 0) {
+        console.warn(`Invidious ${instance}: no audio formats`);
+        continue;
       }
-    } catch {
-      continue;
+
+      return {
+        success: true,
+        service: "invidious",
+        instance,
+        streamingUrls: audioFormats.map((f: any) => ({
+          url: `${instance}/latest_version?id=${encodeURIComponent(videoId)}&itag=${encodeURIComponent(String(f.itag))}`,
+          directUrl: f.url,
+          bitrate: f.bitrate,
+          type: f.type || f.mimeType,
+          audioQuality: f.audioQuality,
+          itag: f.itag,
+        })),
+        metadata: {
+          id: videoId,
+          title: data.title,
+          author: data.author,
+          thumbnail: data.videoThumbnails?.[0]?.url,
+          lengthSeconds: data.lengthSeconds,
+          viewCount: data.viewCount,
+        },
+      };
+    } catch (err) {
+      console.warn(`Invidious ${instance} failed:`, String(err));
     }
   }
 
-  return { success: false, error: "No working Invidious instances found" };
+  return {
+    success: false,
+    error: "No working Invidious instances found",
+  };
 }
