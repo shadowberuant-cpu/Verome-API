@@ -28,10 +28,11 @@ const PIPED_INSTANCES = [
 ];
 
 const FALLBACK_INVIDIOUS_INSTANCES = [
-  "https://y.com.sb",
-  "https://inv.nadeko.net",
+  "https://invidious.nerdvpn.de",
+  "https://yt.chocolatemoo53.com",
+  "https://invidious.tiekoetter.com",
+  "https://invidious.f5.si",
 ];
-
 async function getDynamicInstances(): Promise<StreamingInstanceList> {
   const now = Date.now();
 
